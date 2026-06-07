@@ -21,8 +21,27 @@ function checkLoginLockout(){
   return true;
 }
 // ── SESSION HELPERS ─────────────────────────────────────────────────
-async function _routeUser(){
-  // BUG-FIX: wrap ด้วย try/catch เพื่อป้องกัน loading ค้างถ้า Supabase error
+// _routeUser accepts an optional pre-fetched employee object so callers that
+// already have a fresh DB record (e.g. _restoreSession) can pass it directly
+// and avoid a redundant round-trip to Supabase (BUG-A fix).
+async function _routeUser(prefetchedEmp){
+  // SEC-02 FIX: Always verify role from Supabase before routing.
+  // Use prefetchedEmp when the caller already fetched it (avoids double round-trip).
+  try{
+    const fresh = prefetchedEmp || await sbGetEmployeeById(currentUser.id);
+    if(!fresh || !fresh.is_active){
+      doLogout(); return;
+    }
+    currentUser.role     = fresh.role;
+    currentUser.name     = fresh.name;
+    currentUser.branch   = fresh.branch;
+    currentUser.position = fresh.position;
+    localStorage.setItem('_session', JSON.stringify(currentUser));
+  }catch(e){
+    hideLoading();
+    showAlert('loginAlert','ตรวจสอบสิทธิ์ไม่ได้: '+e.message,'error');
+    return;
+  }
   try{
     if(currentUser.role==='admin'){
       await initAdmin();setupAdminHeader();showView('admin');
@@ -35,7 +54,11 @@ async function _routeUser(){
       } else {
         await initEmployee();setupUserHeader();showView('emp');
       }
+    } else if(currentUser.role==='employee'){
+      // L-4 FIX: role "employee" = ลงทะเบียนเข้างานเท่านั้น ไม่ redirect ไปหน้าโหวตหลัง register
+      await initEmployee();setupUserHeader();showView('emp');
     } else {
+      // fallback สำหรับ role ที่ไม่รู้จัก
       await initEmployee();setupUserHeader();showView('emp');
     }
     // FIX #1: hideLoading ทุก success path (ก่อนหน้านี้ไม่เคย call ทำให้ spinner ค้าง)
@@ -59,7 +82,7 @@ async function _restoreSession(){
     if(!res||!res.is_active) { localStorage.removeItem('_session'); return false; }
     currentUser=res;
     localStorage.setItem('_session', JSON.stringify(currentUser)); // refresh
-    await _routeUser();
+    await _routeUser(res); // BUG-A: pass prefetched record — avoids second DB call
     return true;
   } catch(e){ localStorage.removeItem('_session'); return false; }
 }
@@ -102,6 +125,9 @@ async function doLogin(){
         lockoutCount++;
         loginLockUntil=Date.now()+lockMs;loginAttempts=0;
         localStorage.setItem('_ll',JSON.stringify({lockUntil:loginLockUntil,count:lockoutCount}));
+        // BUG-03 NOTE: localStorage lockout can be bypassed via incognito or clearing storage.
+        // For real protection, implement rate-limiting in a Supabase Edge Function or use
+        // Supabase's built-in auth rate limiting. This client-side lock is UX-only.
         if(lockoutTimerId)clearTimeout(lockoutTimerId);
         lockoutTimerId=setTimeout(()=>{
           loginLockUntil=0;lockoutTimerId=null;
@@ -127,8 +153,10 @@ async function doLogin(){
     // SEC: บันทึก session ไว้ใน localStorage เพื่อ auto-restore เมื่อรีเฟรช
     localStorage.setItem('_session', JSON.stringify(currentUser));
     await _routeUser();
-  }catch(err){showAlert('loginAlert','เชื่อมต่อ Supabase ไม่ได้: '+err.message,'error');}
-  finally{hideLoading();setBtn('btnLogin',false,'<i class="ti ti-login"></i> <span>เข้าสู่ระบบ</span>');}
+  }catch(err){showAlert('loginAlert','เชื่อมต่อ Supabase ไม่ได้: '+err.message,'error');hideLoading();}
+  // BUG-B FIX: hideLoading is called inside _routeUser on every path.
+  // Only reset the button here; do NOT call hideLoading() again.
+  finally{setBtn('btnLogin',false,'<i class="ti ti-login"></i> <span>เข้าสู่ระบบ</span>');}
 }
 function doLogout(){
   stopScanner();stopGPSWatch();clearAllTimers();stopConfetti();
@@ -505,6 +533,7 @@ async function doRegister(){
     stopScanner();stopGPSWatch();showEmpStep('estep-success');
     // user ที่ลงทะเบียนเสร็จ → เด้งไปหน้าโหวตทันที พร้อม countdown bar
     // (superuser ไม่ผ่านหน้านี้ เพราะเข้าหน้าโหวตโดยตรงตั้งแต่ login)
+    // L-4 FIX: role "employee" ไม่ redirect ไปหน้าโหวต — ลงทะเบียนเข้างานอย่างเดียว
     if(currentUser.role==='user'){
       const bar=document.getElementById('voteRedirectBar');
       const barFill=document.getElementById('voteCountdownBar');

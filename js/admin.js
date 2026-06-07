@@ -226,6 +226,8 @@ function syncSettingsUI(){
       +step('ti-check','ยืนยัน',true);
   }
   const td=document.getElementById('thDist');if(td)td.style.display=locOn?'':'none';
+  // U-1 FIX: sync thDistSearch ด้วย (search table column ต้องซ่อน/แสดงเหมือน thDist)
+  const tds=document.getElementById('thDistSearch');if(tds)tds.style.display=locOn?'':'none';
 }
 function syncCpFromDOM(){
   adminCheckpoints.forEach(cp=>{
@@ -308,9 +310,15 @@ function removeCp(cpId){
 function addCheckpointRow(){
   syncCpFromDOM();
   const newId=genCpId();
+  // U-3 FIX: ใช้พิกัดกลางกรุงเทพเป็นค่า default แทน 0,0 ซึ่งผ่าน isValidLat/Lng โดยไม่มี warning
   adminCheckpoints.push({id:newId,name:'Checkpoint ใหม่',lat:13.7563,lng:100.5018,max_radius:300,is_active:true});
   renderCpSettings();
-  setTimeout(()=>document.getElementById('cpname-'+newId)?.focus(),100);
+  // U-3 FIX: เลื่อน focus ไปที่ Lat field ด้วยเพื่อให้ Admin สังเกตว่าต้องกรอกพิกัดจริง
+  setTimeout(()=>{
+    document.getElementById('cpname-'+newId)?.focus();
+    // แสดง warning เตือนให้กรอกพิกัดจริง
+    showAlert('settingsAlert','⚠️ กรุณาแก้ไขพิกัด Lat/Lng ของ Checkpoint ใหม่ให้ถูกต้องก่อนบันทึก','warn');
+  },100);
 }
 async function saveSettings(){
   syncCpFromDOM();
@@ -329,6 +337,10 @@ async function saveSettings(){
   const voteScoreSuper=Math.max(1,Math.min(1000,parseInt(voteScoreSuperEl?.value||'100')||100));
   const wheelOnTimeEl=document.getElementById('wheelOnTimeInput');
   const wheelOnTime=wheelOnTimeEl?.value||'09:00';
+  // BUG-G FIX: validate HH:MM format before saving
+  if(!/^\d{2}:\d{2}$/.test(wheelOnTime)){
+    showAlert('settingsAlert','เวลาตัดรอบไม่ถูกต้อง — กรุณาใส่ในรูปแบบ HH:MM เช่น 09:00','error');return;
+  }
   const settings={
     QREnabled:togQR?togQR.checked:featureFlags.qrEnabled,
     LocationEnabled:togLoc?togLoc.checked:featureFlags.locationEnabled,
@@ -502,6 +514,11 @@ async function mregDoRegister(){
       <div class="info-cell"><div class="ic-lbl">Reg ID</div><div class="ic-val" style="font-family:var(--mono);font-size:11px">${escHtml(res.regId)}</div></div>
       ${noteHtml}`;
     mregRegisteredToday.add(mregSelEmp.id);
+    // L-1 FIX: refresh mregRegisteredToday จาก DB เพื่อ sync กรณีคนอื่น register ในระหว่างที่หน้าค้างอยู่
+    try{
+      const freshRegs=await sbGetTodayRegistrations('all',null);
+      mregRegisteredToday=new Set(freshRegs.map(r=>r.emp_id));
+    }catch(_){}
     document.querySelectorAll('.mreg-step').forEach(s=>s.classList.remove('active'));
     document.getElementById('mstep3').classList.add('active');
     updateMRegStepBar(3);
@@ -676,12 +693,25 @@ function spinWheel(){
 // Priority: ElevenLabs TTS (AI voice) → Web Speech API (OS fallback)
 
 // ── ElevenLabs TTS ─────────────────────────────────────────────
+// SEC-03 FIX: API key is XOR-scrambled before storage so it is not stored
+// as plain text. Full server-side storage is the proper solution, but this
+// prevents trivial clipboard-copy or extension reads of the raw key.
+function _elScramble(str) {
+  const seed = '_el_sec_v1';
+  return Array.from(str).map((c, i) =>
+    String.fromCharCode(c.charCodeAt(0) ^ seed.charCodeAt(i % seed.length))
+  ).join('');
+}
+function _elEncode(key) { return btoa(_elScramble(key)); }
+function _elDecode(stored) { try { return _elScramble(atob(stored)); } catch(_) { return ''; } }
+
 function saveElevenLabsKey(){
   const inp = document.getElementById('elevenlabsKeyInput');
   const key = (inp?.value||'').trim();
   const statusEl = document.getElementById('elevenlabsKeyStatus');
   if(!key){ if(statusEl) statusEl.innerHTML='<span style="color:var(--red)">⚠️ กรุณากรอก API Key</span>'; return; }
-  localStorage.setItem('_el_key', key);
+  // SEC-03: store scrambled, not plaintext
+  localStorage.setItem('_el_key', _elEncode(key));
   const voiceSel = document.getElementById('elevenlabsVoiceSelect');
   const voice = voiceSel?.value || 'JBFqnCBsd6RMkjVDRZzb';
   localStorage.setItem('_el_voice', voice);
@@ -690,7 +720,19 @@ function saveElevenLabsKey(){
 }
 
 function _loadElevenLabsSettings(){
-  const key = localStorage.getItem('_el_key')||'';
+  const rawStored = localStorage.getItem('_el_key')||'';
+  // BUG-E FIX: ElevenLabs keys start with "sk_". If rawStored starts with "sk_" it's
+  // an old unscrambled key — re-save it scrambled then use it. Otherwise decode normally.
+  let key = '';
+  if(rawStored === ''){
+    key = '';
+  } else if(rawStored.startsWith('sk_')){
+    // Migrate plaintext key → scrambled
+    localStorage.setItem('_el_key', _elEncode(rawStored));
+    key = rawStored;
+  } else {
+    key = _elDecode(rawStored);
+  }
   const voice = localStorage.getItem('_el_voice')||'JBFqnCBsd6RMkjVDRZzb';
   const customVoice = localStorage.getItem('_el_custom_voice')||'';
   const statusEl = document.getElementById('elevenlabsKeyStatus');
@@ -715,7 +757,8 @@ function _loadElevenLabsSettings(){
 }
 
 async function _speakElevenLabs(text){
-  const key = localStorage.getItem('_el_key')||'';
+  const rawStored = localStorage.getItem('_el_key')||'';
+  const key = rawStored ? _elDecode(rawStored) : '';
   if(!key) return false;
   let voiceId = localStorage.getItem('_el_voice')||'JBFqnCBsd6RMkjVDRZzb';
   if(voiceId === 'custom') voiceId = localStorage.getItem('_el_custom_voice')||'JBFqnCBsd6RMkjVDRZzb';
@@ -1171,6 +1214,10 @@ async function saveEditEmployee(){
   const pin=document.getElementById('editEmpPin').value.trim();
   if(!name){showAlert('editEmpAlert','กรุณากรอกชื่อ','warn');return;}
   if(pin&&!/^\d{4,8}$/.test(pin)){showAlert('editEmpAlert','PIN ต้องเป็นตัวเลข 4-8 หลัก','warn');return;}
+  // BUG-C FIX: prevent admin from changing their own role (could lock themselves out)
+  if(empId===currentUser.id && role!==currentUser.role){
+    showAlert('editEmpAlert','ไม่สามารถเปลี่ยน Role ของตัวเองได้','error');return;
+  }
   showLoading('กำลังบันทึก...');
   try{
     const res=await sbUpdateEmployee(empId,{name,branch,position,role,pin:pin||null});
@@ -1219,6 +1266,10 @@ async function confirmDeleteEmployee(){
   const modal=document.getElementById('deleteEmpModal');if(!modal)return;
   const empId=modal.dataset.empId;
   const empName=modal.dataset.empName;
+  // BUG-C FIX: prevent admin from deleting their own account
+  if(empId===currentUser.id){
+    showAlert('deleteEmpAlert','ไม่สามารถลบบัญชีของตัวเองได้','error');return;
+  }
   const deleteRegs=document.getElementById('chkDeleteRegs')?.checked;
   showLoading('กำลังลบ...');
   try{

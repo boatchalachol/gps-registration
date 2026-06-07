@@ -37,8 +37,10 @@ async function sbToggleContest(contestId, isActive) {
 }
 
 async function sbDeleteContest(contestId) {
-  // Delete votes first
-  await db.from('votes').delete().eq('contest_id', contestId);
+  // BUG-05 FIX: Check votes deletion succeeded before deleting the contest.
+  // Without this, a failed votes delete leaves orphan votes forever.
+  const { error: votesErr } = await db.from('votes').delete().eq('contest_id', contestId);
+  if (votesErr) throw new Error('ลบ votes ไม่สำเร็จ: ' + votesErr.message);
   const { error } = await db.from('contests').delete().eq('id', contestId);
   if (error) throw error;
 }
@@ -171,7 +173,7 @@ async function loadContestList() {
             <div style="font-size:10px;color:var(--text3)">${userVotes.length} โหวต</div>
           </div>
           <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
-            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Super (10-${_superMax})</div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Super (1-${_superMax})</div>
             <div style="font-size:20px;font-weight:700;color:var(--purple)">${superTotal}</div>
             <div style="font-size:10px;color:var(--text3)">${superVotes.length} โหวต</div>
           </div>
@@ -305,7 +307,11 @@ async function initVoteView() {
 
 function _startVotePolling() {
   _stopVotePolling();
+  // INFO-04 FIX: Use 10s interval (was 2s) — Realtime is the primary update mechanism.
+  // Polling is only a safety net for when Realtime drops.
   _votePollingTimer = setInterval(async () => {
+    // Skip polling if the realtime channel is healthy
+    if (userVoteRealtimeChannel && userVoteRealtimeChannel.state === 'joined') return;
     const selectStep = document.getElementById('vstep-select');
     if (!selectStep || selectStep.style.display === 'none') return;
     try {
@@ -316,7 +322,7 @@ function _startVotePolling() {
         await renderVoteContestList();
       }
     } catch(e) { /* silent fail */ }
-  }, 2000);
+  }, 10000);
 }
 
 function _stopVotePolling() {
@@ -382,13 +388,20 @@ async function openVoteScore(contest) {
   const userVoteScore  = parseInt(voteSettings['VoteScoreUser']  || '10');
   const superVoteScore = parseInt(voteSettings['VoteScoreSuper'] || '100');
   const max = isSuper ? superVoteScore : userVoteScore;
-  // สร้าง 10 ระดับคะแนน: step=max/10 เสมอ → 10,20,...,100 (ถ้า max=100)
-  const levels = 10;
-  const step = Math.ceil(max / levels);
-  const scoreValues = [];
-  for (let i = 1; i <= levels; i++) {
-    const v = Math.min(i * step, max);
-    if (!scoreValues.includes(v)) scoreValues.push(v);
+  // L-2 FIX: ถ้า max <= 10 แสดงทุกค่า 1..max
+  // ถ้า max > 10 แสดง 10 ระดับโดยเลือกจุดที่กระจายสม่ำเสมอ รวม 1 และ max เสมอ
+  let scoreValues = [];
+  if (max <= 10) {
+    for (let i = 1; i <= max; i++) scoreValues.push(i);
+  } else {
+    const levels = 10;
+    scoreValues.push(1);
+    for (let i = 1; i < levels - 1; i++) {
+      const v = Math.round(1 + (i / (levels - 1)) * (max - 1));
+      if (!scoreValues.includes(v)) scoreValues.push(v);
+    }
+    if (!scoreValues.includes(max)) scoreValues.push(max);
+    scoreValues.sort((a, b) => a - b);
   }
 
   const label = document.getElementById('voteRangeLabel');

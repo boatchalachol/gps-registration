@@ -1,5 +1,8 @@
-const SUPABASE_URL  = "https://zqsdmsgnqyyxqozuyapr.supabase.co";
-const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxc2Rtc2ducXl5eHFvenV5YXByIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2OTMwMTgsImV4cCI6MjA5NjI2OTAxOH0.p8Z3ygD3gv2xzPcakXok2LoYIfs5Ed70aSPDHOPz7ck";
+// SEC-01 FIX: Credentials are loaded at runtime from /config.js (gitignored).
+// config.js must define: window.__SB_URL and window.__SB_ANON
+// This keeps secrets out of source code — never commit real keys here.
+const SUPABASE_URL  = (typeof window !== 'undefined' && window.__SB_URL)  || "YOUR_SUPABASE_URL";
+const SUPABASE_ANON = (typeof window !== 'undefined' && window.__SB_ANON) || "YOUR_SUPABASE_ANON_KEY";
 const CONFIG_READY = !SUPABASE_URL.includes("YOUR_") && !SUPABASE_ANON.includes("YOUR_");
 let db = null;
 function initSupabase(){
@@ -139,10 +142,15 @@ function isValidLng(v){const n=parseFloat(v);return !isNaN(n)&&n>=-180&&n<=180;}
 function clearAllTimers(){Object.values(qrTimers).forEach(t=>clearInterval(t));qrTimers={};}
 
 // ══ SUPABASE ════════════════════════════════════════════════
-// ── PIN Hashing (SEC-01) ────────────────────────────────────
-// Hashes PIN with SHA-256 (hex) before sending to DB.
-// Migration: run once to update all existing employee PINs in DB.
-// For production hardening, move to a Supabase Edge Function using bcrypt.
+// ── PIN Hashing ────────────────────────────────────────────
+// INFO-01: SHA-256 is used here as an improvement over plaintext,
+// but it is fast enough to brute-force offline if the DB is leaked.
+// RECOMMENDED UPGRADE: Move PIN verification to a Supabase Edge Function
+// using bcrypt (cost ≥ 10) or argon2id. Steps:
+//   1. Create Edge Function `verify-pin` → accepts {empId, pin}
+//   2. Server: bcrypt.compare(pin, storedHash) → return session token
+//   3. Replace sbLogin() with a call to that Edge Function
+//   4. Re-hash existing PINs via migrate-pin-hash.js once
 async function hashPin(pin){
   const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(pin)));
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
@@ -372,7 +380,11 @@ async function sbDeleteRegistrations(empId){
 }
 async function sbSearchRegistrations({name,cpId}){
   let q=db.from('registrations').select('id,emp_id,emp_name,cp_id,cp_name,registered_at,distance_m,is_manual').order('registered_at',{ascending:false}).limit(200);
-  if(name){const n=name.trim();q=q.or(`emp_name.ilike.%${n}%,emp_id.ilike.%${n}%`);}
+  if(name){
+    // BUG-04 FIX: escape PostgREST wildcard chars (% and _) to prevent query manipulation
+    const n=name.trim().replace(/[%_\\]/g, c => '\\' + c);
+    q=q.or(`emp_name.ilike.%${n}%,emp_id.ilike.%${n}%`);
+  }
   if(cpId)q=q.eq('cp_id',cpId);
   const{data,error}=await q;if(error)throw error;return data||[];
 }
@@ -411,9 +423,13 @@ async function sbClearTodayWinners(){
 
 async function sbSaveCheckpoints(checkpoints){
   const ids=checkpoints.map(c=>c.id);
+  const errors=[];
   for(const cp of checkpoints){
-    await db.from('checkpoints').upsert({id:cp.id,name:cp.name,lat:cp.lat,lng:cp.lng,is_active:cp.is_active!==false,max_radius:cp.max_radius||300},{onConflict:'id'});
+    const{error}=await db.from('checkpoints').upsert({id:cp.id,name:cp.name,lat:cp.lat,lng:cp.lng,is_active:cp.is_active!==false,max_radius:cp.max_radius||300},{onConflict:'id'});
+    // BUG-F FIX: collect errors instead of silently swallowing them
+    if(error) errors.push(`${cp.id}: ${error.message}`);
   }
+  if(errors.length) throw new Error('บันทึก Checkpoint ไม่สำเร็จ: '+errors.join(', '));
   const{data:all}=await db.from('checkpoints').select('id');
   const toDelete=(all||[]).filter(r=>!ids.includes(r.id)).map(r=>r.id);
   if(toDelete.length){

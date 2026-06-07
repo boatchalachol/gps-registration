@@ -463,6 +463,10 @@ const pageWheelHTML = `
       <button class="wheel-exclude-toggle" id="btnExcludeWinners">
         <i class="ti ti-user-off" style="font-size:12px"></i> ตัดผู้โชคดีออก
       </button>
+      <!-- C-1 FIX: เพิ่ม btnWheelMute ที่หายไปจาก app.js — wireEventListeners() ต้องการ element นี้ -->
+      <button class="btn btn-outline btn-sm" id="btnWheelMute" title="เปิด/ปิดเสียงประกาศ" aria-label="เปิด/ปิดเสียงประกาศ" style="min-width:38px;padding:6px 10px">
+        <i class="ti ti-volume" id="wheelMuteIcon"></i>
+      </button>
     </div>
 
     <!-- Wheel canvas -->
@@ -744,7 +748,7 @@ const pageSettingsHTML = `
           aria-label="เลือกเสียงประกาศ">
           <option value="">🔊 อัตโนมัติ (แนะนำ)</option>
         </select>
-        <button class="btn btn-outline btn-sm" onclick="previewWheelVoice()" title="ทดสอบเสียง" style="flex-shrink:0">
+        <button class="btn btn-outline btn-sm" id="btnPreviewVoice" title="ทดสอบเสียง" style="flex-shrink:0">
           <i class="ti ti-player-play"></i> ทดสอบเสียง
         </button>
       </div>
@@ -1157,6 +1161,9 @@ function wireEventListeners() {
       const btn = document.getElementById('btnWheelMute');
       if(btn) btn.style.color = _wheelMuted ? 'var(--red)' : '';
     });
+  // C-2 FIX: ใช้ addEventListener แทน inline onclick="previewWheelVoice()"
+  document.getElementById('btnPreviewVoice')
+    ?.addEventListener('click', previewWheelVoice);
   document.getElementById('wfAll')
     ?.addEventListener('click', () => setWheelFilter('all', 'all', document.getElementById('wfAll')));
   document.getElementById('wfOnTime')
