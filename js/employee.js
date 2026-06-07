@@ -92,15 +92,20 @@ async function doLogin(){
   if(!loginLockUntil){
     const stored=localStorage.getItem('_ll');
     if(stored){
-      const parsed=JSON.parse(stored);
-      if(Date.now()<parsed.lockUntil){
-        loginLockUntil=parsed.lockUntil;
-        lockoutCount=parsed.count||0;
-        loginAttempts=0;
-        if(lockCountdownTimer)clearInterval(lockCountdownTimer);
-        lockCountdownTimer=setInterval(updateLockoutBar,1000);
-        updateLockoutBar();
-      }else{
+      try{
+        const parsed=JSON.parse(stored);
+        if(Date.now()<parsed.lockUntil){
+          loginLockUntil=parsed.lockUntil;
+          lockoutCount=parsed.count||0;
+          loginAttempts=0;
+          if(lockCountdownTimer)clearInterval(lockCountdownTimer);
+          lockCountdownTimer=setInterval(updateLockoutBar,1000);
+          updateLockoutBar();
+        }else{
+          localStorage.removeItem('_ll');
+        }
+      }catch(_){
+        // N-L4 FIX: corrupted localStorage value — discard silently instead of crashing
         localStorage.removeItem('_ll');
       }
     }
@@ -519,7 +524,8 @@ async function doRegister(){
     const res=await sbRegister({
       empId:currentUser.id,empName:currentUser.name,branch:currentUser.branch,position:currentUser.position,
       cpId:selectedCp.id,cpName:selectedCp.name,
-      userLat,userLng,accuracy:userAcc,distanceM:dist,qrToken:qrToken||'BYPASS'
+      userLat,userLng,accuracy:userAcc,distanceM:dist,qrToken:qrToken||'BYPASS',
+      cachedSettings:sysSettings  // N-L3 FIX: reuse already-loaded settings, skip extra DB round-trip
     });
     if(!res.ok){showAlert('qrAlert',res.msg,'error');return;}
     const ts=new Date(res.ts);
