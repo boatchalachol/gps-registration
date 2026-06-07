@@ -58,7 +58,11 @@ async function sbGetActiveContests() {
 }
 
 async function sbSubmitVote(contestId, score) {
-  // SEC-03: Validate score range by re-fetching settings (prevents client-side bypass)
+  // G-9 NOTE: sbGetSettings() is called here intentionally for server-side score validation
+  // (prevents client-side bypass where user manipulates voteSelectedScore in DevTools).
+  // Tradeoff: 1 extra round-trip per vote submission. Acceptable for security.
+  // Alternative: pass maxAllowed from openVoteScore() as a parameter, but that
+  // would trust the client value — defeats the purpose of server-side validation.
   const voteSettings = await sbGetSettings();
   const isSuper = currentUser.role === 'superuser';
   const maxAllowed = parseInt(isSuper ? (voteSettings['VoteScoreSuper'] || '100') : (voteSettings['VoteScoreUser'] || '10'));
@@ -93,10 +97,13 @@ async function sbSubmitVote(contestId, score) {
 
 async function sbGetMyVotedContests() {
   if (!currentUser) return [];
+  // G-4 FIX: add .limit(500) — a single user voting 500+ contests is implausible,
+  // but without a limit the query is unbounded if data accumulates across many contests
   const { data, error } = await db
     .from('votes')
     .select('contest_id')
-    .eq('voter_id', currentUser.id);
+    .eq('voter_id', currentUser.id)
+    .limit(500);
   if (error) return [];
   return (data || []).map(v => v.contest_id);
 }
@@ -116,6 +123,7 @@ async function initVotingPage() {
 
 async function sbGetAllVotes() {
   // N-L2 FIX: add .limit(1000) to cap payload size.
+  // G-6 FIX: if result length === 1000, votes may be truncated — caller should warn.
   // Voter detail rows are lazy-loaded per contest when the <details> expands.
   const { data, error } = await db
     .from('votes')
@@ -123,7 +131,9 @@ async function sbGetAllVotes() {
     .order('created_at', { ascending: false })
     .limit(1000);
   if (error) throw error;
-  return data || [];
+  const rows = data || [];
+  rows._truncated = rows.length === 1000; // flag for caller
+  return rows;
 }
 
 async function loadContestList() {
@@ -133,6 +143,12 @@ async function loadContestList() {
     const [contests, allVotes, voteSettings] = await Promise.all([sbGetContests(false), sbGetAllVotes(), sbGetSettings()]);
     const _userMax = parseInt(voteSettings['VoteScoreUser'] || '10');
     const _superMax = parseInt(voteSettings['VoteScoreSuper'] || '100');
+    // G-6 FIX: warn admin if allVotes was truncated at 1000 rows
+    if (allVotes._truncated) {
+      wrap.innerHTML = `<div style="background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)">
+        <i class="ti ti-alert-triangle"></i> ⚠️ มี votes มากกว่า 1,000 รายการ — สรุปคะแนนในหน้านี้อาจไม่ครบ กรุณาใช้ "ดูรายละเอียดผู้โหวต" ต่อ contest เพื่อดูข้อมูลที่ถูกต้อง
+      </div>`;
+    }
     const votesByContest = {};
     allVotes.forEach(v => {
       if (!votesByContest[v.contest_id]) votesByContest[v.contest_id] = [];
