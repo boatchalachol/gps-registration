@@ -96,7 +96,10 @@ function setBtn(id,dis,html){const el=document.getElementById(id);if(!el)return;
 function setConfirmBtn(ready){setBtn('btnConfirmReg',!ready);}
 function updateClock(){
   const el=document.getElementById('headerSub');
-  if(!el||!currentUser||currentUser.role==='admin')return;
+  // N-C2 FIX: skip clock override for admin AND superuser/user roles.
+  // setupVoteHeader() sets headerSub to the voter's name; updateClock()
+  // must not clobber it every second on the vote page.
+  if(!el||!currentUser||currentUser.role==='admin'||currentUser.role==='superuser'||currentUser.role==='user')return;
   el.textContent=new Date().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 setInterval(updateClock,1000);
@@ -177,9 +180,14 @@ async function sbGetSettings(){
   const map={};(data||[]).forEach(r=>map[r.key]=r.value);return map;
 }
 async function sbSaveSettings(settingsMap){
+  // N-S3 FIX: collect per-key errors so a failure mid-loop surfaces immediately
+  // and settings are never silently partially saved.
+  const errors=[];
   for(const[key,value]of Object.entries(settingsMap)){
-    await db.from('settings').upsert({key,value:String(value)},{onConflict:'key'});
+    const{error}=await db.from('settings').upsert({key,value:String(value)},{onConflict:'key'});
+    if(error)errors.push(`${key}: ${error.message}`);
   }
+  if(errors.length)throw new Error('บันทึก settings ไม่สำเร็จ:\n'+errors.join('\n'));
 }
 async function sbGetQRTokens(activeOnly=true){
   const now=new Date().toISOString();let q=db.from('qr_tokens').select('*');
@@ -227,12 +235,14 @@ async function sbCheckUserRegisteredToday(empId){
   const{data}=await db.from('registrations').select('id').eq('emp_id',empId).gte('registered_at',start).lte('registered_at',end).limit(1);
   return data&&data.length>0;
 }
-async function sbRegister({empId,empName,branch,position,cpId,cpName,userLat:lat,userLng:lng,accuracy,distanceM,qrToken:tok,isManual,adminId,note}){
+async function sbRegister({empId,empName,branch,position,cpId,cpName,userLat:lat,userLng:lng,accuracy,distanceM,qrToken:tok,isManual,adminId,note,cachedSettings}){
   empName=sanitize(empName);
   branch=sanitize(branch);
   position=sanitize(position);
   note=note?String(note).trim().slice(0,500):null;
-  const settings=await sbGetSettings();
+  // N-L3 FIX: accept cachedSettings from caller (employee.js already has sysSettings)
+  // to avoid an extra DB round-trip on every registration.
+  const settings=cachedSettings||await sbGetSettings();
   const qrEnabled=settings['QREnabled']!=='false';
   const locEnabled=settings['LocationEnabled']==='true';
   const radiusLock=settings['RadiusLockEnabled']==='true';
