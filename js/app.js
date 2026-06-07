@@ -1039,6 +1039,9 @@ if (!CONFIG_READY) {
 function wireEventListeners() {
 
   // Login
+  // G-1 FIX: Enter on employee ID field moves focus to PIN (was doing nothing before)
+  document.getElementById('loginEmpId')
+    ?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('loginPin')?.focus(); } });
   document.getElementById('loginPin')
     ?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doLogin(); } });
   document.getElementById('btnLogin')
@@ -1190,6 +1193,9 @@ function wireEventListeners() {
     ?.addEventListener('click', async () => {
       voteSelectedContest = null;
       voteSelectedScore = null;
+      // G-2 FIX: re-fetch voted contest IDs from server before rendering
+      // so contests voted in other sessions show as done correctly
+      voteMyDoneIds = await sbGetMyVotedContests();
       await renderVoteContestList();
       showVoteStep('vstep-select');
     });
