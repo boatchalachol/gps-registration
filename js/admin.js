@@ -43,7 +43,12 @@ function showAdminPage(name,btnEl){
 // ══ ADMIN INIT ══════════════════════════════════════════════
 async function initAdmin(){
   await Promise.all([loadCheckpoints(),loadEmployees(),loadSettingsAdmin(),loadQRTokens()]);
-  syncSettingsUI();renderQRGrid();loadDashboard();renderEmployeeTable();renderCpSettings();
+  syncSettingsUI();renderQRGrid();renderEmployeeTable();renderCpSettings();
+  // G-7 FIX: start dashboard with timer — initAdmin goes directly to dashboard tab,
+  // so we replicate the same logic as showAdminPage('dashboard') to start auto-refresh
+  loadDashboard();
+  if(dashRefreshTimer){clearInterval(dashRefreshTimer);dashRefreshTimer=null;}
+  dashRefreshTimer=setInterval(loadDashboard,60000);
 }
 async function loadCheckpoints(){try{adminCheckpoints=await sbGetCheckpoints(false);}catch(e){adminCheckpoints=[];}}
 async function loadEmployees(){try{adminEmployees=await sbGetEmployees();}catch(e){adminEmployees=[];}}
@@ -499,7 +504,14 @@ async function mregDoRegister(){
       branch:mregSelEmp.branch||'',position:mregSelEmp.position||'',
       cpId:mregSelCp.id,cpName:mregSelCp.name,
       userLat:null,userLng:null,accuracy:null,distanceM:0,
-      qrToken:null,isManual:true,adminId:currentUser.id,note
+      qrToken:null,isManual:true,adminId:currentUser.id,note,
+      // G-3 FIX: pass featureFlags as cachedSettings to skip redundant sbGetSettings() call
+      // isManual=true skips QR/GPS checks anyway, but settings are still read in sbRegister
+      cachedSettings:{
+        QREnabled:featureFlags.qrEnabled,
+        LocationEnabled:featureFlags.locationEnabled,
+        RadiusLockEnabled:featureFlags.radiusEnabled
+      }
     });
     if(!res.ok){showAlert('mregAlert',res.msg,'error');return;}
     const ts=new Date(res.ts);
@@ -930,8 +942,11 @@ function clearWinners(){
 }
 function startConfetti(){
   const canvas=document.getElementById('confettiCanvas');if(!canvas)return;
+  // G-8 FIX: size canvas to full window before drawing — was relying only on resize event
+  // which meant first confetti burst rendered in a tiny 300×150 default canvas
+  canvas.width=window.innerWidth;
+  canvas.height=window.innerHeight;
   canvas.style.display='block';
-  canvas.width=window.innerWidth;canvas.height=window.innerHeight;
   const ctx=canvas.getContext('2d');
   const pieces=Array.from({length:140},()=>({
     x:Math.random()*canvas.width,y:Math.random()*-canvas.height*0.6,
