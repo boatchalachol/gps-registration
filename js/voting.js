@@ -115,10 +115,13 @@ async function initVotingPage() {
 }
 
 async function sbGetAllVotes() {
+  // N-L2 FIX: add .limit(1000) to cap payload size.
+  // Voter detail rows are lazy-loaded per contest when the <details> expands.
   const { data, error } = await db
     .from('votes')
     .select('contest_id, voter_id, voter_name, voter_role, score, created_at')
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(1000);
   if (error) throw error;
   return data || [];
 }
@@ -184,26 +187,13 @@ async function loadContestList() {
           </div>
         </div>
 
-        <!-- Voter detail toggle -->
-        <details style="margin-bottom:10px">
+        <!-- Voter detail toggle (N-L2: lazy-loaded on expand to avoid huge payloads) -->
+        <details class="contest-detail-toggle" data-contest-id="${escHtml(c.id)}" style="margin-bottom:10px">
           <summary style="font-size:12px;color:var(--text2);cursor:pointer;padding:6px 0">
             <i class="ti ti-users" style="font-size:11px"></i> ดูรายละเอียดผู้โหวต (${votes.length} คน)
           </summary>
-          <div style="margin-top:8px;max-height:200px;overflow-y:auto">
-            ${votes.length === 0 ? '<div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">ยังไม่มีผู้โหวต</div>' :
-              votes.map(v => `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-radius:6px;background:var(--bg2);margin-bottom:4px">
-                  <div>
-                    <span style="font-size:12px;font-weight:600">${escHtml(v.voter_name)}</span>
-                    <span style="font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;
-                      ${v.voter_role === 'superuser' ? 'background:var(--purple-bg,rgba(155,109,255,.12));color:var(--purple,#9b6dff)' : 'background:var(--teal-bg);color:var(--teal)'}">
-                      ${v.voter_role === 'superuser' ? '⭐ Super' : '👤 User'}
-                    </span>
-                  </div>
-                  <div style="font-size:16px;font-weight:700;color:var(--amber)">${v.score}</div>
-                </div>
-              `).join('')
-            }
+          <div class="voter-detail-body" style="margin-top:8px;max-height:200px;overflow-y:auto">
+            <div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">กำลังโหลด...</div>
           </div>
         </details>
 
@@ -219,6 +209,35 @@ async function loadContestList() {
         </div>
       `;
       wrap.appendChild(card);
+      // N-L2 FIX: lazy-load voter details only when <details> is opened
+      const detailsEl = card.querySelector('.contest-detail-toggle');
+      if (detailsEl) {
+        let loaded = false;
+        detailsEl.addEventListener('toggle', async () => {
+          if (!detailsEl.open || loaded) return;
+          loaded = true;
+          const body = detailsEl.querySelector('.voter-detail-body');
+          try {
+            const contestVotes = await sbGetContestScores(c.id);
+            body.innerHTML = contestVotes.length === 0
+              ? '<div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">ยังไม่มีผู้โหวต</div>'
+              : contestVotes.map(v => `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-radius:6px;background:var(--bg2);margin-bottom:4px">
+                  <div>
+                    <span style="font-size:12px;font-weight:600">${escHtml(v.voter_name)}</span>
+                    <span style="font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;
+                      ${v.voter_role === 'superuser' ? 'background:var(--purple-bg,rgba(155,109,255,.12));color:var(--purple,#9b6dff)' : 'background:var(--teal-bg);color:var(--teal)'}">
+                      ${v.voter_role === 'superuser' ? '⭐ Super' : '👤 User'}
+                    </span>
+                  </div>
+                  <div style="font-size:16px;font-weight:700;color:var(--amber)">${v.score}</div>
+                </div>
+              `).join('');
+          } catch(e) {
+            body.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px">โหลดไม่ได้: ${escHtml(e.message)}</div>`;
+          }
+        });
+      }
     }
     // Wire buttons
     wrap.querySelectorAll('[data-toggle-contest]').forEach(btn => {
@@ -388,19 +407,22 @@ async function openVoteScore(contest) {
   const userVoteScore  = parseInt(voteSettings['VoteScoreUser']  || '10');
   const superVoteScore = parseInt(voteSettings['VoteScoreSuper'] || '100');
   const max = isSuper ? superVoteScore : userVoteScore;
-  // L-2 FIX: ถ้า max <= 10 แสดงทุกค่า 1..max
-  // ถ้า max > 10 แสดง 10 ระดับโดยเลือกจุดที่กระจายสม่ำเสมอ รวม 1 และ max เสมอ
+  // N-L1 FIX: show every integer when max <= 20 (no skipping possible).
+  // For max > 20 use Math.round(i * max / levels) which distributes evenly
+  // without mid-range collisions (avoids the "skip 6 when max=11" bug from
+  // the old formula that anchored at 1 and scaled the remaining range).
   let scoreValues = [];
-  if (max <= 10) {
+  if (max <= 20) {
     for (let i = 1; i <= max; i++) scoreValues.push(i);
   } else {
     const levels = 10;
-    scoreValues.push(1);
-    for (let i = 1; i < levels - 1; i++) {
-      const v = Math.round(1 + (i / (levels - 1)) * (max - 1));
-      if (!scoreValues.includes(v)) scoreValues.push(v);
+    const seen = new Set();
+    for (let i = 1; i <= levels; i++) {
+      const v = Math.round(i * max / levels);
+      const clamped = Math.min(Math.max(v, 1), max);
+      if (!seen.has(clamped)) { seen.add(clamped); scoreValues.push(clamped); }
     }
-    if (!scoreValues.includes(max)) scoreValues.push(max);
+    if (!seen.has(1)) scoreValues.unshift(1);
     scoreValues.sort((a, b) => a - b);
   }
 
