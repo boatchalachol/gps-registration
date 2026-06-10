@@ -546,6 +546,48 @@ const pageDashboardHTML = `
       <button class="btn btn-outline btn-sm" id="btnExportCSV">
         <i class="ti ti-file-spreadsheet"></i> Export CSV วันนี้
       </button>
+      <button class="btn btn-outline btn-sm" id="btnExportExcel" style="color:var(--teal);border-color:var(--teal)">
+        <i class="ti ti-table-export"></i> Export Excel
+      </button>
+    </div>
+
+    <!-- Excel Export Modal -->
+    <div id="excelExportModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9000;align-items:center;justify-content:center">
+      <div style="background:var(--bg2,#0f1520);border:1px solid var(--border2,#2a3245);border-radius:14px;padding:28px 28px 22px;width:min(420px,92vw);box-shadow:0 8px 40px #0008">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+          <i class="ti ti-table-export" style="font-size:20px;color:var(--teal)"></i>
+          <span style="font-size:16px;font-weight:700;color:var(--text,#e2e8f0)">Export Excel ย้อนหลัง</span>
+          <button id="btnCloseExcelModal" style="margin-left:auto;background:none;border:none;cursor:pointer;color:var(--text3);font-size:20px;line-height:1">✕</button>
+        </div>
+        <div style="display:grid;gap:14px">
+          <div>
+            <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:5px">ตัวเลือกช่วงเวลา</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-outline btn-xs excel-preset" data-days="0" style="color:var(--teal);border-color:var(--teal)">วันนี้</button>
+              <button class="btn btn-outline btn-xs excel-preset" data-days="7">7 วันล่าสุด</button>
+              <button class="btn btn-outline btn-xs excel-preset" data-days="30">30 วันล่าสุด</button>
+              <button class="btn btn-outline btn-xs excel-preset" data-days="90">90 วันล่าสุด</button>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:5px">วันเริ่มต้น</label>
+              <input type="date" id="excelDateFrom" style="width:100%;background:var(--bg3,#161b27);border:1px solid var(--border2,#2a3245);border-radius:8px;color:var(--text,#e2e8f0);padding:8px 10px;font-size:13px;font-family:var(--font);outline:none;box-sizing:border-box">
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:5px">วันสิ้นสุด</label>
+              <input type="date" id="excelDateTo" style="width:100%;background:var(--bg3,#161b27);border:1px solid var(--border2,#2a3245);border-radius:8px;color:var(--text,#e2e8f0);padding:8px 10px;font-size:13px;font-family:var(--font);outline:none;box-sizing:border-box">
+            </div>
+          </div>
+          <div id="excelExportAlert" style="min-height:20px"></div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
+          <button id="btnCancelExcelModal" class="btn btn-outline btn-sm">ยกเลิก</button>
+          <button id="btnConfirmExcelExport" class="btn btn-outline btn-sm" style="color:var(--teal);border-color:var(--teal)">
+            <i class="ti ti-download"></i> Download Excel
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Search registrations section -->
@@ -1103,6 +1145,30 @@ function wireEventListeners() {
     ?.addEventListener('click', loadDashboard);
   document.getElementById('btnExportCSV')
     ?.addEventListener('click', exportCSV);
+  document.getElementById('btnExportExcel')
+    ?.addEventListener('click', openExcelExportModal);
+  document.getElementById('btnCloseExcelModal')
+    ?.addEventListener('click', closeExcelExportModal);
+  document.getElementById('btnCancelExcelModal')
+    ?.addEventListener('click', closeExcelExportModal);
+  document.getElementById('btnConfirmExcelExport')
+    ?.addEventListener('click', doExportExcel);
+  document.querySelectorAll('.excel-preset').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const days=parseInt(btn.dataset.days);
+      const today=bkkDate();
+      document.getElementById('excelDateTo').value=today;
+      if(days===0){
+        document.getElementById('excelDateFrom').value=today;
+      }else{
+        const from=new Date(today+'T00:00:00+07:00');
+        from.setDate(from.getDate()-(days-1));
+        document.getElementById('excelDateFrom').value=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Bangkok'}).format(from);
+      }
+      document.querySelectorAll('.excel-preset').forEach(b=>{b.style.color='';b.style.borderColor='';});
+      btn.style.color='var(--teal)';btn.style.borderColor='var(--teal)';
+    });
+  });
   const dashSearchInput = document.getElementById('dashSearchName');
   if(dashSearchInput){
     dashSearchInput.addEventListener('input', () => dashSearchRegs());
