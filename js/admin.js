@@ -1332,3 +1332,71 @@ async function saveNewEmployee(){
 
 // Event bindings are wired in app.js wireEventListeners()
 
+
+// ══ EXCEL EXPORT (ย้อนหลัง) ══════════════════════════════════
+function openExcelExportModal(){
+  const modal=document.getElementById('excelExportModal');
+  if(!modal)return;
+  // Set default: today
+  const today=bkkDate();
+  document.getElementById('excelDateFrom').value=today;
+  document.getElementById('excelDateTo').value=today;
+  document.querySelectorAll('.excel-preset').forEach(b=>{b.style.color='';b.style.borderColor='';});
+  const todayBtn=document.querySelector('.excel-preset[data-days="0"]');
+  if(todayBtn){todayBtn.style.color='var(--teal)';todayBtn.style.borderColor='var(--teal)';}
+  document.getElementById('excelExportAlert').innerHTML='';
+  modal.style.display='flex';
+}
+function closeExcelExportModal(){
+  const modal=document.getElementById('excelExportModal');
+  if(modal)modal.style.display='none';
+}
+async function doExportExcel(){
+  const from=document.getElementById('excelDateFrom').value;
+  const to=document.getElementById('excelDateTo').value;
+  const alertEl=document.getElementById('excelExportAlert');
+  if(!from||!to){
+    alertEl.innerHTML='<span style="color:var(--amber);font-size:12px">กรุณาเลือกช่วงวันที่</span>';return;
+  }
+  if(from>to){
+    alertEl.innerHTML='<span style="color:var(--amber);font-size:12px">วันเริ่มต้นต้องไม่เกินวันสิ้นสุด</span>';return;
+  }
+  alertEl.innerHTML='';
+  showLoading('กำลัง Export Excel...');
+  try{
+    const start=new Date(from+'T00:00:00+07:00').toISOString();
+    const end=new Date(to+'T23:59:59.999+07:00').toISOString();
+    const{data,error}=await db.from('registrations')
+      .select('*')
+      .gte('registered_at',start)
+      .lte('registered_at',end)
+      .order('registered_at',{ascending:true});
+    if(error)throw error;
+    if(!data||!data.length){
+      hideLoading();
+      alertEl.innerHTML='<span style="color:var(--amber);font-size:12px">ไม่มีข้อมูลในช่วงวันที่เลือก</span>';
+      return;
+    }
+    // Build worksheet data
+    const colHeaders=['reg_id','emp_id','emp_name','branch','position','cp_id','cp_name','registered_at','lat','lng','distance_m','accuracy','is_manual','admin_id','note'];
+    const displayHeaders=['รหัสการลงทะเบียน','รหัสพนักงาน','ชื่อพนักงาน','สาขา','ตำแหน่ง','รหัส Checkpoint','ชื่อ Checkpoint','เวลาลงทะเบียน','Latitude','Longitude','ระยะทาง (ม.)','ความแม่นยำ','ลงทะเบียนเอง','Admin ID','หมายเหตุ'];
+    const wsData=[displayHeaders,...data.map(r=>colHeaders.map(h=>{
+      if(h==='registered_at'&&r[h]){
+        // Convert to Bangkok time for display
+        return new Date(r[h]).toLocaleString('th-TH',{timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      }
+      if(h==='is_manual')return r[h]?'ใช่':'ไม่';
+      return r[h]??'';
+    }))];
+    const ws=XLSX.utils.aoa_to_sheet(wsData);
+    // Column widths
+    ws['!cols']=[{wch:32},{wch:14},{wch:24},{wch:16},{wch:18},{wch:14},{wch:22},{wch:22},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:30}];
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'ข้อมูลการลงทะเบียน');
+    const filename=from===to?`registrations-${from}.xlsx`:`registrations-${from}-to-${to}.xlsx`;
+    XLSX.writeFile(wb,filename);
+    closeExcelExportModal();
+  }catch(e){
+    alertEl.innerHTML=`<span style="color:var(--red,#f87171);font-size:12px">Export ไม่ได้: ${e.message}</span>`;
+  }finally{hideLoading();}
+}
